@@ -1,11 +1,22 @@
 services:
   python-producer:
-    build:
-      context: ./producer-python
+    build: ./producer-python
     ports:
       - "8000:8000"
+
     healthcheck:
       test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" ]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  dotnet-processor:
+    build:
+      context: ./processor-dotnet
+    environment:
+      PRODUCER_BASE_URL: "http://python-producer:8000"
+      POLL_INTERVAL_SECONDS: "5"
+      SYMBOLS: "BTCUSD,AAPL,PETR4"
+    depends_on:
+      python-producer:
+        condition: service_healthy
