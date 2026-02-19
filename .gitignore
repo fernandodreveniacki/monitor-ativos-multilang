@@ -1,5 +1,11 @@
+# .NET
+**/bin/
+**/obj/
+
+# env
 .env
 
-venv/
-
+# Python
 __pycache__/
+*.pyc
+venv/

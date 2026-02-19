@@ -11,5 +11,5 @@ public sealed class Quote
     public string symbol { get; set; } = default!;
     public decimal price { get; set; }
     public decimal change_pct { get; set; }
-    public string quoted_at { get; set; } = default!;
+    public DateTimeOffset quoted_at { get; set; }
 }
