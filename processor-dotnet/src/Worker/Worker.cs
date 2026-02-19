@@ -78,26 +78,34 @@ public sealed class Worker : BackgroundService
                         attempt
                     );
 
-                    var response = await client.GetFromJsonAsync<PrecoResponse>(
-                        "/preco",
-                        cancellationToken: stoppingToken
-                    );
+                    var symbols = Environment.GetEnvironmentVariable("SYMBOLS") ?? "BTCUSD,AAPL,PETR4";
 
-                    if (response is null)
+
+                    var quoteResponse = await client.GetFromJsonAsync<QuoteResponse>(
+                         $"/quotes?symbols={symbols}",
+                         cancellationToken: stoppingToken
+                     );
+
+                    if (quoteResponse is null)
                         throw new InvalidOperationException("Response is null");
 
-                    counters.QuotesFetched = 1;
+                    counters.SymbolsRequested = quoteResponse.Quotes.Count;
+                    counters.QuotesFetched = quoteResponse.Quotes.Count;
 
                     _logger.LogInformation(
-                        "processor.http.success ativo={ativo} preco={preco}",
-                        response.ativo, response.preco
+                        "processor.http.success fetched={fetched} generatedAt={generatedAt}",
+                        quoteResponse.Quotes.Count,
+                        quoteResponse.GeneratedAt
                     );
 
-                    if (response.preco <= threshold)
+                    // filtra pelo threshold
+                    var toPersist = quoteResponse.Quotes.Where(q => q.Price > threshold).ToList();
+
+                    if (toPersist.Count == 0)
                     {
                         _logger.LogInformation(
-                            "processor.threshold.skip preco={preco} threshold={threshold}",
-                            response.preco, threshold
+                            "processor.threshold.skip threshold={threshold} fetched={fetched}",
+                            threshold, quoteResponse.Quotes.Count
                         );
 
                         cycleSucceeded = true;
@@ -106,8 +114,7 @@ public sealed class Worker : BackgroundService
                         break;
                     }
 
-                    await PersistAsync(response, stoppingToken, counters);
-
+                    await PersistAsync(toPersist, stoppingToken, counters);
                     cycleSucceeded = true;
                     LogCycleEnd(sw, counters);
                     _metrics.Record(cycleId, sw.ElapsedMilliseconds, counters);
@@ -172,12 +179,11 @@ public sealed class Worker : BackgroundService
     }
 
     private async Task PersistAsync(
-        PrecoResponse response,
-        CancellationToken ct,
-        CycleCounters counters)
+    List<QuoteItem> quotes,
+    CancellationToken ct,
+    CycleCounters counters)
     {
         var connString = Environment.GetEnvironmentVariable("SUPABASE_DB_CONNECTION");
-
         if (string.IsNullOrWhiteSpace(connString))
             throw new InvalidOperationException("SUPABASE_DB_CONNECTION not set");
 
@@ -189,23 +195,33 @@ public sealed class Worker : BackgroundService
         try
         {
             await using var cmd = new NpgsqlCommand(@"
-                insert into public.asset_quotes(symbol, price, change_pct, quoted_at)
-                values (@symbol, @price, 0, now());
-            ", conn, tx);
+            insert into public.asset_quotes(symbol, price, change_pct, quoted_at)
+            values (@symbol, @price, @change_pct, @quoted_at);
+        ", conn, tx);
 
-            cmd.Parameters.AddWithValue("@symbol", response.ativo);
-            cmd.Parameters.AddWithValue("@price", response.preco);
 
-            var rows = await cmd.ExecuteNonQueryAsync(ct);
+            var pSymbol = cmd.Parameters.Add("@symbol", NpgsqlTypes.NpgsqlDbType.Text);
+            var pPrice = cmd.Parameters.Add("@price", NpgsqlTypes.NpgsqlDbType.Numeric);
+            var pChange = cmd.Parameters.Add("@change_pct", NpgsqlTypes.NpgsqlDbType.Numeric);
+            var pQuoted = cmd.Parameters.Add("@quoted_at", NpgsqlTypes.NpgsqlDbType.TimestampTz);
 
-            counters.QuotesInserted = rows;
+            var inserted = 0;
+
+            foreach (var q in quotes)
+            {
+                pSymbol.Value = q.Symbol;
+                pPrice.Value = q.Price;
+                pChange.Value = q.ChangePct;
+                pQuoted.Value = q.QuotedAt.UtcDateTime;
+
+                inserted += await cmd.ExecuteNonQueryAsync(ct);
+            }
+
+            counters.QuotesInserted += inserted;
 
             await tx.CommitAsync(ct);
 
-            _logger.LogInformation(
-                "processor.db.commit ativo={ativo} preco={preco}",
-                response.ativo, response.preco
-            );
+            _logger.LogInformation("processor.db.commit inserted={inserted}", inserted);
         }
         catch
         {
@@ -214,6 +230,7 @@ public sealed class Worker : BackgroundService
             throw;
         }
     }
+
 
     private void LogCycleEnd(Stopwatch sw, CycleCounters counters)
     {

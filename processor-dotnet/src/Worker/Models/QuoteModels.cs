@@ -1,15 +1,27 @@
+using System.Text.Json.Serialization;
+
 namespace Worker.Models;
 
-public sealed class QuoteEnvelope
+public sealed class QuoteItem
 {
-    public string generated_at { get; set; } = default!;
-    public List<Quote> quotes { get; set; } = new();
+    [JsonPropertyName("symbol")]
+    public string Symbol { get; set; } = default!;
+
+    [JsonPropertyName("price")]
+    public decimal Price { get; set; }
+
+    [JsonPropertyName("change_pct")]
+    public decimal ChangePct { get; set; }
+
+    [JsonPropertyName("quoted_at")]
+    public DateTimeOffset QuotedAt { get; set; }
 }
 
-public sealed class Quote
+public sealed class QuoteResponse
 {
-    public string symbol { get; set; } = default!;
-    public decimal price { get; set; }
-    public decimal change_pct { get; set; }
-    public DateTimeOffset quoted_at { get; set; }
+    [JsonPropertyName("generated_at")]
+    public DateTimeOffset GeneratedAt { get; set; }
+
+    [JsonPropertyName("quotes")]
+    public List<QuoteItem> Quotes { get; set; } = new();
 }

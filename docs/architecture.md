@@ -2,19 +2,18 @@
 
 ## Versão
 
-Documento referente à versão inicial (v1) do projeto.
-A implementação será realizada incrementalmente conforme o roadmap.
+Documento referente à versão funcional inicial (v1).
 
 ---
 
 ## Visão Arquitetural
 
-O Sistema foi projetado como uma arquitetura distribuída composta por dois serviços independentes:
+O sistema foi projetado como uma arquitetura distribuída composta por dois serviços:
 
 - **Producer (Python + FastAPI)**
-- **Processor (.NET Worker)**
+- **Processor (.NET 8 Worker Service)**
 
-A comunicação entre os serviços será realizada via HTTP dentro da rede do Docker Compose.
+A comunicação entre os serviços ocorre via HTTP dentro da rede do Docker Compose.
 
 ---
 
@@ -28,42 +27,64 @@ Responsável por:
 - Expor endpoints HTTP
 - Fornecer dados estruturados para consumo
 
-Não possuirá responsabilidade de persistência.
+Não possui responsabilidade de persistência.
 
+### Endpoints disponíveis
+- `GET /preco`
+Retorna uma única cotação simulada.
+- `GET /precos`
+Retorna a lista completa de ativos simulados.
+- `GET /quotes?symbols=BTCUSD,AAPL,PETR4`
+Permite filtrar ativos específicos via query string.
+
+Exemplo de resposta:
+```
+{
+  "generated_at": "2026-02-19T15:00:00Z",
+  "quotes": [
+    {
+      "symbol": "BTCUSD",
+      "price": 182.45,
+      "change_pct": 1.24,
+      "quoted_at": "2026-02-19T15:00:00Z"
+    },
+    {
+      "symbol": "AAPL",
+      "price": 150.12,
+      "change_pct": -0.42,
+      "quoted_at": "2026-02-19T15:00:00Z"
+    }
+  ]
+}
+```
 ---
 
 ### Processor (.NET)
 
 Responsável por:
 
-- Consumir periodicamente o Producer
-- Aplicar regras de processamento (se necessário)
-- Persistir os dados no Supabase (Postgres)
+- Executar polling periódico
+- Consumir o Producer
+- Aplicar a regra `PRICE_THRESHOLD`
+- Persistir dados no Supabase (PostgreSQL)
+- Gerar logs estruturados com `cycleId`
 
 ---
 
-### Supabase (Postgres)
+### Supabase (PostgreSQL)
 
 Responsável por:
 
 - Armazenamento persistente das cotações
-- Manter histórico de eventos
-- Permitir futuras consultas analíticas
+- Manutenção do histórico de preços
+- Suporte a futuras consultas analíticas
 
 ---
 
 ## Comunicação entre Containers
 
-Dentro do Docker Compose, os serviços se comunicarão via nome do serviço: 
-`http://python-producer:8000`
+Dentro do Docker Compose, os serviços se comunicam via nome do serviço:
 
-Nunca será utilizado `localhost`, pois dentro de containers isso referencia o próprio container.
+http://python-producer:8000
 
----
-
-## Princípios Arquiteturais
-
-- Separação de responsabilidades
-- Baixo acoplamento entre serviços
-- Configuração via variáveis de ambiente
-- Evolução incremental via versionamento
+`localhost` não é utilizado, pois dentro de containers ele referencia o próprio container.

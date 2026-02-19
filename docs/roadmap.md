@@ -1,42 +1,51 @@
 # Roadmap
 
-## Versão 1 — Estrutura Inicial
+## Versão 1 — v1 (MVP Funcional)
 
-- [x] Estrutura de diretórios
-- [x] Documentação arquitetural
-- [x] Definição de camadas
-- [x] Planejamento do fluxo
+### Estrutura e Arquitetura
+- [x] Estrutura inicial de diretórios
+- [x] Definição arquitetural (Producer + Processor)
+- [x] Comunicação entre containers via Docker Compose
 
----
+### Producer (Python + FastAPI)
+- [x] Endpoint /health
+- [x] Endpoint /preco
+- [x] Endpoint /precos
+- [x] Endpoint /quotes?symbols=
+- [x] Dockerfile configurado
 
-## Versão 2 — Implementação do Producer
+### Processor (.NET 8 Worker)
+- [x] Implementação de BackgroundService
+- [x] Polling periódico configurável
+- [x] Integração com HttpClient
+- [x] Retry com backoff exponencial
+- [x] Logs estruturados com cycleId
+- [x] Dockerfile configurado
 
-- [ ] Criar FastAPI app
-- [ ] Implementar endpoint `/health`
-- [ ] Implementar endpoint `/quotes`
-- [ ] Adicionar Dockerfile
+### Persistência
+- [x] Integração com Supabase (PostgreSQL)
+- [x] Tabela asset_quotes
+- [x] Regra PRICE_THRESHOLD
+- [x] Idempotência via controle de inserção
 
----
+## Próximas Evoluções
+### Observabilidade
+- [ ] Métricas Prometheus
+- [ ] Dashboard Grafana
+- [ ] Healthcheck do Processor
+- [ ] Structured logging com sink externo
 
-## Versão 3 — Implementação do Processor
+### Arquitetura
+- [ ] Introduzir mensageria (RabbitMQ ou Kafka)
+- [ ] Separar camada de domínio no Processor
+- [ ] Adicionar testes automatizados
 
-- [ ] Criar Worker .NET
-- [ ] Implementar polling
-- [ ] Integrar HttpClient
-- [ ] Adicionar Dockerfile
+### Performance & Resiliência
+- [ ] Cache temporário de cotações
+- [ ] Circuit breaker
+- [ ] Configuração dinâmica de ativos via banco
 
----
-
-## Versão 4 — Persistência
-
-- [ ] Criar tabela no Supabase
-- [ ] Integrar Npgsql
-- [ ] Implementar insert de cotações
-
----
-
-## Versão 5 — Refinamento
-
-- [ ] Adicionar logs estruturados
-- [ ] Melhorar tratamento de erros
-- [ ] Adicionar testes básicos
+### Infraestrutura
+- [ ] Docker multi-stage otimizado
+- [ ] CI/CD básico (GitHub Actions)
+- [ ] Deploy em ambiente cloud
