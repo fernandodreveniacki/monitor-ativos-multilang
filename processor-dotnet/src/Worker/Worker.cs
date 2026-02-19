@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
-using Worker.Models;
 using Npgsql;
+using Worker.Models;
+using Worker.Observability;
 
 namespace Worker;
 
@@ -12,10 +14,15 @@ public class Worker : BackgroundService
     // Logger padrão do .NET para observabilidade
     private readonly ILogger<Worker> _logger;
 
-    public Worker(IHttpClientFactory httpClientFactory, ILogger<Worker> logger)
+    private readonly InMemoryMetrics _metrics;
+
+    // Snapshot a cada N ciclos
+    private static long _cycleSeq;
+    public Worker(IHttpClientFactory httpClientFactory, ILogger<Worker> logger, InMemoryMetrics metrics)
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
+        _metrics = metrics;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -27,7 +34,7 @@ public class Worker : BackgroundService
         ) ? seconds : 5;
 
         // Lista de ativos a serem consultados (fallback padrão)
-        var symbols = Environment.GetEnvironmentVariable("SYMBOLS") ?? "BTCUSD,AAPL,PETR4";
+        var symbolsCsv = Environment.GetEnvironmentVariable("SYMBOLS") ?? "BTCUSD,AAPL,PETR4";
 
         // Configuração de retry com exponential backoff
         var maxRetries = int.TryParse(Environment.GetEnvironmentVariable("MAX_RETRIES"), out var mr) ? mr : 5;
@@ -37,13 +44,29 @@ public class Worker : BackgroundService
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(intervalSeconds));
 
         _logger.LogInformation(
-                "Processor Worker started | interval={Interval}s | symbols={Symbols} | maxRetries={MaxRetries} | baseDelayMs={BaseDelayMs}",
-                intervalSeconds, symbols, maxRetries, baseDelayMs
+            "processor.worker.start intervalSeconds={intervalSeconds} symbols={symbols} maxRetries={maxRetries} baseDelayMs={baseDelayMs}",
+            intervalSeconds, symbolsCsv, maxRetries, baseDelayMs
         );
 
         // Loop principal: roda para sempre (até cancelamento)
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
+            var cycleId = Guid.NewGuid().ToString("N")[..12];
+            using var scope = _logger.BeginCycleScope(cycleId);
+
+            var sw = Stopwatch.StartNew();
+            var counters = new CycleCounters();
+
+            var symbols = symbolsCsv
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            counters.SymbolsRequested = symbols.Length;
+
+            _logger.LogInformation(
+                "processor.cycle.start symbolsRequested={symbolsRequested}",
+                counters.SymbolsRequested
+            );
+
             // A cada tick, tenta executar o ciclo com retry/backoff
             var cycleSucceeded = false;
 
@@ -54,27 +77,45 @@ public class Worker : BackgroundService
                     // Cria cliente HTTP nomeado ("producer")
                     var client = _httpClientFactory.CreateClient("producer");
 
+                    _logger.LogInformation(
+                        "processor.http.request attempt={attempt} symbolsCsv={symbolsCsv}",
+                        attempt, symbolsCsv
+                    );
+
                     // Chama API do producer buscando as cotações
                     var envelope = await client.GetFromJsonAsync<QuoteEnvelope>(
-                        $"/quotes?symbols={symbols}",
+                        $"/quotes?symbols={symbolsCsv}",
                         cancellationToken: stoppingToken
                     );
 
                     // Validação 1: resposta totalmente nula
                     if (envelope is null)
                     {
-                        _logger.LogWarning("Envelope is null (attempt {Attempt}/{Max})", attempt, maxRetries);
+                        _logger.LogWarning(
+                            "processor.http.invalid_response reason=envelope_null attempt={attempt}",
+                            attempt
+                        );
                         throw new InvalidOperationException("Envelope is null");
                     }
 
                     // Validação 2: lista vazia ou inexistente
                     if (envelope.quotes is null || envelope.quotes.Count == 0)
                     {
-                        _logger.LogWarning("No quotes received (attempt {Attempt}/{Max})", attempt, maxRetries);
-                        // Sem dados não é erro fatal. Apenas encerra o ciclo deste tick.
+                        // Não é erro fatal: ciclo válido, só sem dados.
+                        counters.QuotesFetched = 0;
+
+                        _logger.LogInformation(
+                            "processor.cycle.end elapsedMs={elapsedMs} {@counters}",
+                            sw.ElapsedMilliseconds,
+                            counters
+                        );
+
+                        _metrics.Record(cycleId, sw.ElapsedMilliseconds, counters);
                         cycleSucceeded = true;
                         break;
                     }
+
+                    counters.QuotesFetched = envelope.quotes.Count;
 
                     // Recupera string de conexão com banco (Supabase/Postgres)
                     var connString = Environment.GetEnvironmentVariable("SUPABASE_DB_CONNECTION");
@@ -124,17 +165,38 @@ public class Worker : BackgroundService
 
                         await tx.CommitAsync(stoppingToken);
 
-                        // Log do ciclo
+                        counters.QuotesInserted = inserted;
+                        counters.QuotesConflictSkipped = skipped;
+
                         _logger.LogInformation(
-                            "Cycle finished | quotes={Quotes} inserted={Inserted} skipped={Skipped}",
-                            envelope.quotes.Count, inserted, skipped
+                            "processor.db.commit inserted={inserted} skippedConflict={skipped}",
+                            inserted, skipped
                         );
 
+                        _logger.LogInformation(
+                            "processor.cycle.end elapsedMs={elapsedMs} {@counters}",
+                            sw.ElapsedMilliseconds,
+                            counters
+                        );
+
+                        _metrics.Record(cycleId, sw.ElapsedMilliseconds, counters);
                         cycleSucceeded = true;
+
+                        // Snapshot a cada 10 ciclos
+                        var seq = Interlocked.Increment(ref _cycleSeq);
+                        if (seq % 10 == 0)
+                        {
+                            var snap = _metrics.Snapshot();
+                            _logger.LogInformation(
+                                "processor.metrics.snapshot cycles={cycles} avgElapsedMs={avgElapsedMs} quotesInserted={quotesInserted} conflicts={conflicts} errors={errors}",
+                                snap.Cycles, snap.AvgElapsedMs, snap.QuotesInserted, snap.Conflicts, snap.Errors
+                            );
+                        }
                     }
                     catch
                     {
                         await tx.RollbackAsync(stoppingToken);
+                        _logger.LogWarning("processor.db.rollback");
                         throw;
                     }
 
@@ -142,29 +204,47 @@ public class Worker : BackgroundService
                 }
                 catch (Exception ex) when (attempt < maxRetries)
                 {
+
+                    counters.Errors++;
+
                     var delay = TimeSpan.FromMilliseconds(baseDelayMs * Math.Pow(2, attempt - 1));
                     var jitter = TimeSpan.FromMilliseconds(Random.Shared.Next(0, 200));
                     var totalDelay = delay + jitter;
 
+                    counters.Retries++;
+
                     _logger.LogWarning(
                          ex,
-                         "Attempt {Attempt}/{Max} failed. Retrying in {Delay}ms",
-                         attempt, maxRetries, (int)totalDelay.TotalMilliseconds
+                        "processor.http.retry attempt={attempt} backoffMs={backoffMs}",
+                         attempt, (int)totalDelay.TotalMilliseconds
                      );
 
                     await Task.Delay(totalDelay, stoppingToken);
                 }
                 catch (Exception ex)
                 {
+                    counters.Errors++;
+
                     // Todas as tentativas falharam
-                    _logger.LogError(ex, "All retries failed ({Max}). Cycle aborted.", maxRetries);
+                    _logger.LogError(
+                     ex,
+                     "processor.cycle.error elapsedMs={elapsedMs} {@counters}",
+                     sw.ElapsedMilliseconds, counters
+                 );
+
+                    break;
                 }
             }
 
             if (!cycleSucceeded)
             {
                 // Mantém o worker vivo mesmo se o ciclo falhar todo
-                _logger.LogWarning("Cycle failed completely. Worker will try again on next tick.");
+                _logger.LogWarning(
+                    "processor.cycle.failed elapsedMs={elapsedMs} {@counters}",
+                    sw.ElapsedMilliseconds, counters
+                );
+
+                _metrics.Record(cycleId, sw.ElapsedMilliseconds, counters);
             }
         }
     }
