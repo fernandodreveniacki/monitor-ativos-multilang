@@ -1,13 +1,32 @@
 # Monitor de Ativos Financeiros — Multi-language
+
+Sistema distribuído para monitoramento de ativos financeiros, implementado com arquitetura multi-linguagem e orquestrado via Docker Compose.
+
 ## Versão Atual
+Esta é a **versão funcional inicial (v1)** do projeto, contendo:
+- Arquitetura multi-linguagem definida
+- Producer implementado (FastAPI)
+- Processor implementado (.NET Worker)
+- Persistência no Supabase (PostgreSQL Cloud)
+- Retry com backoff exponencial
+- Idempotência via UNIQUE + ON CONFLICT
+- Logs estruturados com correlation id (cycleId)
+- Métricas simples em memória
+- Orquestração via Docker Compose
 
-Esta é a **versão inicial (v1)** do projeto, contendo:
-- Estrutura arquitetural definida
-- Organização dos serviços
-- Documentação técnica inicial
-- Roadmap de implementação
+A evolução futura está descrita em docs/roadmap.md.
 
-A implementação dos serviços será feita incrementalmente conforme os commits seguintes.
+---
+## Status da Versão
+
+- [x] Estrutura inicial do projeto
+- [x] Documentação arquitetural
+- [x] Implementação do Producer
+- [x] Implementação do Processor
+- [x] Persistência no Supabase
+- [x] Dockerfiles otimizados
+- [x] Guia de execução
+- [ ] Testes automatizados no Producer
 
 ---
 
